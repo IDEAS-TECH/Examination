@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FCM.41.020.008.24</title>
+
+    <!-- Core A-Frame -->
+    <script src="scripts/aframe.js"></script>
+
+    <!-- A-Frame Extras (needed for animation-mixer on the dog) -->
+    <script src="scripts/aframe-extras.min.js"></script>
+
+    <!-- Environment Component for the mountains and terrain -->
+    <script src="https://unpkg.com/aframe-environment-component@1.4.0/dist/aframe-environment-component.min.js"></script>
+
+    <!-- Swimming Pool Components: pool-basin, pool-water-shader, pool-caustics -->
+    <script src="swimmingpool.js"></script>
+
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+      }
+
+      /* Loading Screen */
+      #loading-screen {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: radial-gradient(
+          ellipse at 50% 40%,
+          #1c1200 0%,
+          #080700 60%,
+          #000 100%
+        );
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        transition: opacity 1s ease;
+      }
+      #loading-screen.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      .ld-title {
+        font-size: clamp(1.6rem, 4vw, 3rem);
+        letter-spacing: 0.35em;
+        color: #c9a84c;
+        text-transform: uppercase;
+        font-family: "Georgia", serif;
+        margin-bottom: 2rem;
+      }
+      .ld-bar-wrap {
+        width: 300px;
+        height: 4px;
+        background: #111;
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      #ld-bar {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(
+          90deg,
+          #7a5210,
+          #c9a84c,
+          #ffe8a0,
+          #c9a84c,
+          #7a5210
+        );
+        background-size: 200% 100%;
+        animation: ldbg 1.8s linear infinite;
+        transition: width 0.3s ease;
+      }
+      @keyframes ldbg {
+        0% {
+          background-position: 200% 0;
+        }
+        100% {
+          background-position: -200% 0;
+        }
+      }
+      #ld-text {
+        color: #888;
+        font-size: 0.75rem;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        margin-top: 1.5rem;
+        font-family: "Courier New", monospace;
+      }
+    </style>
+
+    <script>
+      /* 1. HEIGHT & MOVEMENT CONTROLS
+         WASD = walk, Arrow Up/Down = fly up/down */
+      AFRAME.registerComponent("height-controls", {
+        schema: {
+          speed: { type: "number", default: 1.0 },
+          minY: { type: "number", default: 0.5 },
+          maxY: { type: "number", default: 80 },
+        },
+        init() {
+          this.keys = {
+            w: false,
+            s: false,
+            a: false,
+            d: false,
+            ArrowUp: false,
+            ArrowDown: false,
+          };
+          this._kd = this._kd.bind(this);
+          this._ku = this._ku.bind(this);
+          document.addEventListener("keydown", this._kd);
+          document.addEventListener("keyup", this._ku);
+        },
+        remove() {
+          document.removeEventListener("keydown", this._kd);
+          document.removeEventListener("keyup", this._ku);
+        },
+        _kd(e) {
+          const k = e.key;
+          if (k === "w" || k === "W") this.keys.w = true;
+          if (k === "s" || k === "S") this.keys.s = true;
+          if (k === "a" || k === "A") this.keys.a = true;
+          if (k === "d" || k === "D") this.keys.d = true;
+          if (k === "ArrowUp") this.keys.ArrowUp = true;
+          if (k === "ArrowDown") this.keys.ArrowDown = true;
+        },
+        _ku(e) {
+          const k = e.key;
+          if (k === "w" || k === "W") this.keys.w = false;
+          if (k === "s" || k === "S") this.keys.s = false;
+          if (k === "a" || k === "A") this.keys.a = false;
+          if (k === "d" || k === "D") this.keys.d = false;
+          if (k === "ArrowUp") this.keys.ArrowUp = false;
+          if (k === "ArrowDown") this.keys.ArrowDown = false;
+        },
+        tick() {
+          const pos = this.el.object3D.position;
+          const rotY = this.el.object3D.rotation.y;
+          const ms = 0.5;
+          const hs = 0.8;
+          const sin = Math.sin(rotY);
+          const cos = Math.cos(rotY);
+          if (this.keys.w) {
+            pos.x -= sin * ms;
+            pos.z -= cos * ms;
+          }
+          if (this.keys.s) {
+            pos.x += sin * ms;
+            pos.z += cos * ms;
+          }
+          if (this.keys.a) {
+            pos.x -= cos * ms;
+            pos.z += sin * ms;
+          }
+          if (this.keys.d) {
+            pos.x += cos * ms;
+            pos.z -= sin * ms;
+          }
+          if (this.keys.ArrowUp) pos.y = Math.min(pos.y + hs, this.data.maxY);
+          if (this.keys.ArrowDown) pos.y = Math.max(pos.y - hs, this.data.minY);
+        },
+      });
+
+      /* 2. DOG PATROL
+         Moves the dog back and forth between two points and makes it face the right direction */
+      AFRAME.registerComponent("dog-patrol", {
+        schema: {
+          speed: { type: "number", default: 1.5 },
+          pointA: { type: "vec3", default: { x: -8, y: 0.1, z: -5 } },
+          pointB: { type: "vec3", default: { x: 8, y: 0.1, z: -5 } },
+        },
+        init() {
+          this._target = new THREE.Vector3(
+            this.data.pointB.x,
+            this.data.pointB.y,
+            this.data.pointB.z,
+          );
+          this._pointA = new THREE.Vector3(
+            this.data.pointA.x,
+            this.data.pointA.y,
+            this.data.pointA.z,
+          );
+          this._pointB = new THREE.Vector3(
+            this.data.pointB.x,
+            this.data.pointB.y,
+            this.data.pointB.z,
+          );
+          this._dir = new THREE.Vector3();
+          this.el.object3D.lookAt(this._target);
+        },
+        tick(time, dt) {
+          const pos = this.el.object3D.position;
+          const dist = pos.distanceTo(this._target);
+          if (dist < 0.4) {
+            // Swap target
+            this._target =
+              this._target === this._pointB ? this._pointA : this._pointB;
+            this.el.object3D.lookAt(this._target);
+          }
+          this._dir.subVectors(this._target, pos).normalize();
+          pos.addScaledVector(this._dir, this.data.speed * (dt / 1000));
+        },
+      });
+
+      /* 3. DAY / NIGHT CYCLE ENGINE
+         Full cycle runs over 40 seconds. Smoothly transitions the sky colour,
+         sun intensity and colour, and ambient light. Also fires night-starts
+         and day-starts events on the scene so other components can react. */
+      AFRAME.registerComponent("day-night-cycle", {
+        schema: { duration: { type: "number", default: 40000 } },
+
+        init() {
+          this._time = 0;
+          this._isNight = false;
+
+          // Cache elements (queried after scene load)
+          this._sun = null;
+          this._ambient = null;
+          this._sky = null;
+
+          // Resolve after first tick so DOM is ready
+          this._resolved = false;
+        },
+
+        _resolve() {
+          this._sun = document.querySelector("#sun-light");
+          this._ambient = document.querySelector("#ambient-light");
+          this._sky = document.querySelector("#sky-box");
+          this._resolved = true;
+        },
+
+        tick(t, dt) {
+          if (!this._resolved) {
+            this._resolve();
+            return;
+          }
+
+          this._time += dt;
+          // cycle: 0 = midnight, 1 = noon
+          const raw = Math.sin((this._time / this.data.duration) * Math.PI * 2);
+          const cycle = (raw + 1) / 2; // 0..1
+
+          /* Sun intensity: 0 at night, 1.8 at noon */
+          const sunIntensity = Math.max(0, cycle * 1.8);
+          this._sun.setAttribute("light", "intensity", sunIntensity);
+
+          /* Sun colour: white at noon, deep orange at sunset, off at night */
+          const sunR = Math.min(1, cycle * 1.2 + (1 - cycle) * 0.6);
+          const sunG = Math.min(1, cycle * 0.9 + (1 - cycle) * 0.3);
+          const sunB = Math.min(1, cycle * 0.7 + (1 - cycle) * 0.1);
+          this._sun.setAttribute(
+            "light",
+            "color",
+            `rgb(${Math.floor(sunR * 255)},${Math.floor(sunG * 255)},${Math.floor(sunB * 255)})`,
+          );
+
+          /* Ambient: dark blue at night, warm during the day */
+          const ambI = Math.max(0.08, cycle * 0.9);
+          this._ambient.setAttribute("light", "intensity", ambI);
+          const ambR = Math.floor(Math.max(20, cycle * 187));
+          const ambG = Math.floor(Math.max(30, cycle * 187));
+          const ambB = Math.floor(Math.max(60, cycle * 200));
+          this._ambient.setAttribute(
+            "light",
+            "color",
+            `rgb(${ambR},${ambG},${ambB})`,
+          );
+
+          /* Sky colour: black at night, sky blue at noon */
+          const sR = Math.floor(Math.max(0, cycle * 135));
+          const sG = Math.floor(Math.max(0, cycle * 195));
+          const sB = Math.floor(Math.max(10, cycle * 225));
+          this._sky.setAttribute("color", `rgb(${sR},${sG},${sB})`);
+
+          /* Fire night / day events */
+          if (cycle < 0.28 && !this._isNight) {
+            this._isNight = true;
+            this.el.emit("night-starts", null, true);
+          } else if (cycle >= 0.28 && this._isNight) {
+            this._isNight = false;
+            this.el.emit("day-starts", null, true);
+          }
+        },
+      });
+
+      /* 4. SMART HOUSE LIGHTS + ARCHITECTURAL UPLIGHTS
+         Waits for the model to finish loading, then spawns glowing sphere
+         bulbs and point lights inside the rooms. Also sets up 4 coloured
+         corner uplights on the building. Everything toggles on night/day. */
+      AFRAME.registerComponent("smart-house-lights", {
+        init() {
+          this._fixtures = [];
+          this._uplights = [];
+
+          this.el.addEventListener("model-loaded", () => {
+            const rooms = [
+              { x: 0, y: 3.5, z: 0 }, // Main Hall
+              { x: 6, y: 3.5, z: 2 }, // East Wing
+              { x: -6, y: 3.5, z: 2 }, // West Wing
+              { x: 3, y: 6.5, z: -1 }, // Upper East
+              { x: -3, y: 6.5, z: -1 }, // Upper West
+              { x: 0, y: 6.5, z: 3 }, // Upper Hall
+            ];
+
+            rooms.forEach((pos) => {
+              const bulb = document.createElement("a-sphere");
+              bulb.setAttribute("radius", "0.18");
+              bulb.setAttribute("position", pos);
+              bulb.setAttribute(
+                "material",
+                "color: #ffcc77; emissive: #ffcc77; emissiveIntensity: 0; shader: flat",
+              );
+
+              const pLight = document.createElement("a-light");
+              pLight.setAttribute("type", "point");
+              pLight.setAttribute("color", "#ffcc77");
+              pLight.setAttribute("intensity", "0");
+              pLight.setAttribute("distance", "12");
+              pLight.setAttribute("decay", "2");
+
+              bulb.appendChild(pLight);
+              this.el.appendChild(bulb);
+              this._fixtures.push({ bulb, light: pLight });
+            });
+
+            /* Architectural uplights at the 4 corners of the building */
+            const uplightConfigs = [
+              { pos: "-6 0.2 -6", color: "#4fc3f7", rot: "-45 45 0" }, // Front-Left (Cyan)
+              { pos: "6 0.2 -6", color: "#81c784", rot: "-45 -45 0" }, // Front-Right (Green)
+              { pos: "-6 0.2 6", color: "#ffb74d", rot: "-45 135 0" }, // Back-Left (Orange)
+              { pos: "6 0.2 6", color: "#ba68c8", rot: "-45 -135 0" }, // Back-Right (Purple)
+            ];
+
+            uplightConfigs.forEach((cfg) => {
+              const wrapper = document.createElement("a-entity");
+              wrapper.setAttribute("position", cfg.pos);
+
+              const spot = document.createElement("a-light");
+              spot.setAttribute("type", "spot");
+              spot.setAttribute("color", cfg.color);
+              spot.setAttribute("intensity", "0");
+              spot.setAttribute("angle", "45");
+              spot.setAttribute("penumbra", "0.3");
+              spot.setAttribute("distance", "25");
+              spot.setAttribute("decay", "2");
+              spot.setAttribute("rotation", cfg.rot);
+
+              const fixture = document.createElement("a-sphere");
+              fixture.setAttribute("radius", "0.08");
+              fixture.setAttribute("position", "0 0.1 0");
+              fixture.setAttribute(
+                "material",
+                `color: ${cfg.color}; emissive: ${cfg.color}; emissiveIntensity: 0; metalness: 0.8; roughness: 0.2`,
+              );
+
+              wrapper.appendChild(spot);
+              wrapper.appendChild(fixture);
+              this.el.sceneEl.appendChild(wrapper);
+              this._uplights.push({ spot, fixture, color: cfg.color });
+            });
+          });
+
+          /* Listen to the day/night events fired by the cycle component */
+          const scene = document.querySelector("a-scene");
+          scene.addEventListener("night-starts", () => {
+            // Interior lights
+            this._fixtures.forEach((f) => {
+              f.bulb.setAttribute("material", "emissiveIntensity: 1");
+              f.light.setAttribute("intensity", "1.5");
+            });
+            // Architectural uplights
+            this._uplights.forEach((u) => {
+              u.spot.setAttribute("intensity", "2.5");
+              u.fixture.setAttribute("material", "emissiveIntensity: 0.8");
+            });
+          });
+          scene.addEventListener("day-starts", () => {
+            // Interior lights
+            this._fixtures.forEach((f) => {
+              f.bulb.setAttribute("material", "emissiveIntensity: 0");
+              f.light.setAttribute("intensity", "0");
+            });
+            // Architectural uplights
+            this._uplights.forEach((u) => {
+              u.spot.setAttribute("intensity", "0");
+              u.fixture.setAttribute("material", "emissiveIntensity: 0");
+            });
+          });
+        },
+      });
+
+      /* 5. MODERN LIGHT POLES
+         Procedurally spawns LED street lights throughout the forest.
+         Poles are scaled up to match the tall trees and are all placed
+         at least 50m from the centre so they never overlap the mansion. */
+      AFRAME.registerComponent("modern-light-poles", {
+        init() {
+          this.poles = [];
+
+          // Inner ring (radius ~55m) and outer ring (radius ~75m) - both well outside the mansion
+          const polePositions = [
+            // Inner ring - 8 poles
+            { x: 55, y: 0.1, z: 0 },
+            { x: -55, y: 0.1, z: 0 },
+            { x: 0, y: 0.1, z: 55 },
+            { x: 0, y: 0.1, z: -55 },
+            { x: 39, y: 0.1, z: 39 },
+            { x: -39, y: 0.1, z: 39 },
+            { x: 39, y: 0.1, z: -39 },
+            { x: -39, y: 0.1, z: -39 },
+            // Outer ring - 12 poles
+            { x: 75, y: 0.1, z: 0 },
+            { x: -75, y: 0.1, z: 0 },
+            { x: 0, y: 0.1, z: 75 },
+            { x: 0, y: 0.1, z: -75 },
+            { x: 53, y: 0.1, z: 53 },
+            { x: -53, y: 0.1, z: 53 },
+            { x: 53, y: 0.1, z: -53 },
+            { x: -53, y: 0.1, z: -53 },
+            { x: 65, y: 0.1, z: 35 },
+            { x: -65, y: 0.1, z: 35 },
+            { x: 65, y: 0.1, z: -35 },
+            { x: -65, y: 0.1, z: -35 },
+          ];
+
+          const scale = 2.5; // scaled up to match the forest tree height
+
+          polePositions.forEach((pos) => {
+            // Create the pole group
+            const poleGroup = document.createElement("a-entity");
+            poleGroup.setAttribute("position", `${pos.x} ${pos.y} ${pos.z}`);
+            poleGroup.setAttribute("scale", `${scale} ${scale} ${scale}`);
+
+            // Tall dark metallic cylinder shaft
+            const pole = document.createElement("a-cylinder");
+            pole.setAttribute("radius", "0.15");
+            pole.setAttribute("height", "8");
+            pole.setAttribute("position", "0 4 0");
+            pole.setAttribute(
+              "material",
+              "color: #2a2a2a; roughness: 0.3; metalness: 0.8",
+            );
+            poleGroup.appendChild(pole);
+
+            // Sleek white LED lamp head
+            const lampHead = document.createElement("a-box");
+            lampHead.setAttribute("width", "1.2");
+            lampHead.setAttribute("height", "0.3");
+            lampHead.setAttribute("depth", "0.6");
+            lampHead.setAttribute("position", "0 8.2 0");
+            lampHead.setAttribute(
+              "material",
+              "color: #ffffff; emissive: #ffffff; emissiveIntensity: 0; roughness: 0.2; metalness: 0.5",
+            );
+            poleGroup.appendChild(lampHead);
+
+            // Downward-facing spotlight below the lamp head
+            const lampLight = document.createElement("a-light");
+            lampLight.setAttribute("type", "spot");
+            lampLight.setAttribute("color", "#fff8e8");
+            lampLight.setAttribute("intensity", "0");
+            lampLight.setAttribute("angle", "60");
+            lampLight.setAttribute("penumbra", "0.4");
+            lampLight.setAttribute("distance", "25");
+            lampLight.setAttribute("decay", "2");
+            lampLight.setAttribute("position", "0 8.3 0");
+            lampLight.setAttribute("rotation", "-90 0 0");
+            lampLight.setAttribute("cast-shadow", "true");
+            poleGroup.appendChild(lampLight);
+
+            // Small decorative torus base at ground level
+            const base = document.createElement("a-torus");
+            base.setAttribute("radius", "0.4");
+            base.setAttribute("radius-tubular", "0.08");
+            base.setAttribute("position", "0 0.15 0");
+            base.setAttribute("rotation", "-90 0 0");
+            base.setAttribute(
+              "material",
+              "color: #1a1a1a; roughness: 0.4; metalness: 0.7",
+            );
+            poleGroup.appendChild(base);
+
+            this.el.appendChild(poleGroup);
+
+            // Store references so we can toggle them at night
+            this.poles.push({ head: lampHead, light: lampLight });
+          });
+
+          // Toggle poles on day/night events
+          const scene = this.el.sceneEl;
+
+          scene.addEventListener("night-starts", () => {
+            this.poles.forEach((p) => {
+              p.head.setAttribute("material", "emissiveIntensity: 1");
+              p.light.setAttribute("intensity", "3");
+            });
+          });
+
+          scene.addEventListener("day-starts", () => {
+            this.poles.forEach((p) => {
+              p.head.setAttribute("material", "emissiveIntensity: 0");
+              p.light.setAttribute("intensity", "0");
+            });
+          });
+        },
+      });
+
+      /* 6. ROOF STRIP LIGHTS
+         LED strips running along the roof edges of the building.
+         They glow at night and switch off during the day. */
+      AFRAME.registerComponent("roof-strip-lights", {
+        init() {
+          this.strips = [];
+
+          const strips = [
+            {
+              pos: "0 4.1  7",
+              width: 18.1,
+              depth: 0.12,
+              height: 0.06,
+              color: "#e8f4ff",
+              lightDist: 6,
+            },
+            {
+              pos: "0 4.1 -7",
+              width: 18.1,
+              depth: 0.12,
+              height: 0.06,
+              color: "#e8f4ff",
+              lightDist: 6,
+            },
+            {
+              pos: "-9 4.1  0",
+              width: 0.12,
+              depth: 14.1,
+              height: 0.06,
+              color: "#e8f4ff",
+              lightDist: 6,
+            },
+            {
+              pos: "9 4.1  0",
+              width: 0.12,
+              depth: 14.1,
+              height: 0.06,
+              color: "#e8f4ff",
+              lightDist: 6,
+            },
+
+            {
+              pos: "0 7.6  4.5",
+              width: 10.1,
+              depth: 0.12,
+              height: 0.06,
+              color: "#e8f4ff",
+              lightDist: 5,
+            },
+            {
+              pos: "0 7.6 -4.5",
+              width: 10.1,
+              depth: 0.12,
+              height: 0.06,
+              color: "#e8f4ff",
+              lightDist: 5,
+            },
+            {
+              pos: "-5 7.6  0",
+              width: 0.12,
+              depth: 9.1,
+              height: 0.06,
+              color: "#e8f4ff",
+              lightDist: 5,
+            },
+            {
+              pos: "5 7.6  0",
+              width: 0.12,
+              depth: 9.1,
+              height: 0.06,
+              color: "#e8f4ff",
+              lightDist: 5,
+            },
+
+            {
+              pos: "0 9.4  0",
+              width: 11,
+              depth: 0.12,
+              height: 0.06,
+              color: "#ffcc66",
+              lightDist: 7,
+            },
+
+            {
+              pos: "-13 3.5  0",
+              width: 0.12,
+              depth: 7.1,
+              height: 0.06,
+              color: "#e8f4ff",
+              lightDist: 4,
+            },
+            {
+              pos: "13 3.5  0",
+              width: 0.12,
+              depth: 7.1,
+              height: 0.06,
+              color: "#e8f4ff",
+              lightDist: 4,
+            },
+          ];
+
+          strips.forEach((cfg) => {
+            const bar = document.createElement("a-box");
+            bar.setAttribute("position", cfg.pos);
+            bar.setAttribute("width", cfg.width);
+            bar.setAttribute("height", cfg.height);
+            bar.setAttribute("depth", cfg.depth);
+            bar.setAttribute(
+              "material",
+              `color: ${cfg.color}; emissive: ${cfg.color}; emissiveIntensity: 0; roughness: 0.1; metalness: 0.3`,
+            );
+
+            const light = document.createElement("a-light");
+            light.setAttribute("type", "point");
+            light.setAttribute("color", cfg.color);
+            light.setAttribute("intensity", "0");
+            light.setAttribute("distance", cfg.lightDist);
+            light.setAttribute("decay", "2");
+            const parts = cfg.pos.trim().split(/\s+/);
+            light.setAttribute(
+              "position",
+              `${parts[0]} ${parseFloat(parts[1]) + 0.3} ${parts[2]}`,
+            );
+
+            this.el.appendChild(bar);
+            this.el.appendChild(light);
+            this.strips.push({ bar, light });
+          });
+
+          const scene = this.el.sceneEl;
+
+          scene.addEventListener("night-starts", () => {
+            this.strips.forEach(({ bar, light }) => {
+              bar.setAttribute("material", "emissiveIntensity: 1.8");
+              light.setAttribute("intensity", "1.6");
+            });
+          });
+
+          scene.addEventListener("day-starts", () => {
+            this.strips.forEach(({ bar, light }) => {
+              bar.setAttribute("material", "emissiveIntensity: 0");
+              light.setAttribute("intensity", "0");
+            });
+          });
+        },
+      });
+
+      /* 7. LOADING SCREEN LOGIC
+         Waits for all assets AND the mansion GLB to finish loading
+         before hiding the loading screen and showing the scene. */
+      document.addEventListener("DOMContentLoaded", () => {
+        const screen = document.getElementById("loading-screen");
+        const bar = document.getElementById("ld-bar");
+        const text = document.getElementById("ld-text");
+        const scene = document.querySelector("a-scene");
+        const mansion = document.querySelector("#mansion");
+
+        if (!scene) return;
+
+        let assetsLoaded = false;
+        let mansionLoaded = false;
+
+        // Track asset loading progress
+        const assets = document.querySelector("a-assets");
+        if (assets) {
+          assets.addEventListener("progress", (e) => {
+            if (e.detail && e.detail.total > 0) {
+              const pct = Math.round((e.detail.loaded / e.detail.total) * 100);
+              bar.style.width = pct + "%";
+              text.textContent = "Loading assets... " + pct + "%";
+            }
+          });
+
+          assets.addEventListener("loaded", () => {
+            assetsLoaded = true;
+            checkReady();
+          });
+        }
+
+        // Wait specifically for mansion model to load
+        if (mansion) {
+          mansion.addEventListener("model-loaded", () => {
+            mansionLoaded = true;
+            bar.style.width = "100%";
+            text.textContent = "Scene Ready";
+            checkReady();
+          });
+        }
+
+        // Show scene only when both assets AND mansion are loaded
+        function checkReady() {
+          if (assetsLoaded && mansionLoaded) {
+            setTimeout(() => {
+              screen.classList.add("hidden");
+              scene.style.display = "block";
+            }, 600);
+          }
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <!-- Loading Screen -->
+    <div id="loading-screen" style="display: flex">
+      <div class="ld-title">DREAM HOUSE VILLA</div>
+      <div class="ld-bar-wrap"><div id="ld-bar"></div></div>
+      <div id="ld-text">Loading assets...</div>
+    </div>
+
+    <!-- A-Frame Scene -->
+    <a-scene
+      day-night-cycle="duration: 40000"
+      loading-screen="enabled: false"
+      renderer="antialias: true; colorManagement: true; physicallyCorrectLights: true"
+      shadow="type: pcfsoft"
+      vr-mode-ui="enabled: false"
+      style="display: none"
+    >
+      <!-- Assets -->
+      <a-assets timeout="120000">
+        <a-asset-item
+          id="la-mansion"
+          src="models/la_mansion-compressed.glb?v=3"
+        ></a-asset-item>
+        <a-asset-item
+          id="lamborghini"
+          src="models/lamborghini.glb?v=3"
+        ></a-asset-item>
+        <a-asset-item id="dog" src="models/dog.glb?v=3"></a-asset-item>
+        <img id="sky" src="skybox/day_sky.jpg?v=3" crossorigin="anonymous" />
+        <img
+          id="ground-tex"
+          src="textures/concrete_diffuse.jpg?v=3"
+          crossorigin="anonymous"
+        />
+      </a-assets>
+
+      <!-- Camera Rig
+           Starts slightly elevated with a mild downward tilt for a cinematic opening view.
+           WASD walks, Arrow Up/Down moves vertically. -->
+      <a-entity id="rig" position="0 8 20" height-controls>
+        <a-camera
+          look-controls="pointerLockEnabled: false"
+          rotation="-15 0 0"
+          fov="72"
+          near="0.05"
+          far="500"
+        ></a-camera>
+      </a-entity>
+
+      <!-- Environment
+           Dense forest surrounds the mansion. playArea: 200 keeps the clearing
+           empty so trees only appear far in the distance. dressingAmount is low
+           to keep things sparse, and treeScale is high for a towering look. -->
+      <a-entity
+        environment="
+        preset:          forest;
+        dressingAmount:  100;
+        dressingColor:   #1d3a14;
+        groundYScale:    20;
+        playArea:        200;
+        skyType:         none;
+        lighting:        none;
+        fog:             0;
+        horizonAmount:   0;
+        groundTexture:   grass;
+        groundColor:     #2d5a1e;
+        groundColor2:    #1a3d0f;
+        treeScale:       3;
+      "
+      ></a-entity>
+
+      <!-- Concrete Deck
+           Slightly raised to avoid Z-fighting with the terrain below. -->
+      <a-plane
+        src="#ground-tex"
+        rotation="-90 0 0"
+        position="0 0.05 0"
+        width="60"
+        height="60"
+        repeat="12 12"
+        shadow="receive: true"
+      ></a-plane>
+
+      <!-- LA Mansion Model
+           Raised slightly so it sits cleanly on the ground.
+           smart-house-lights handles interior bulbs and the 4 corner uplights. -->
+      <a-entity
+        id="mansion"
+        gltf-model="#la-mansion"
+        smart-house-lights
+        position="0 0.1 0"
+        scale="1 1 1"
+        rotation="0 180 0"
+        shadow="cast: true; receive: true"
+      >
+        <a-entity id="roof-lights" roof-strip-lights></a-entity>
+      </a-entity>
+
+      <!-- Modern Light Poles
+           LED street lights scattered through the forest, all well outside
+           the mansion bounds. Toggle automatically with the day/night cycle. -->
+      <a-entity modern-light-poles></a-entity>
+
+      <!-- Lamborghini
+           Parked between the front light poles. Scaled down and rotated to face sideways. -->
+      <a-entity
+        gltf-model="#lamborghini"
+        position="0 0.5 -14,"
+        scale="0.02 0.02 0.02"
+        rotation="0 90 0"
+        shadow="cast: true"
+      ></a-entity>
+
+      <!-- Dog
+           Plays its walk animation via animation-mixer and patrols
+           back and forth in front of the car using dog-patrol. -->
+      <a-entity
+        gltf-model="#dog"
+        animation-mixer="clip: *; loop: repeat"
+        dog-patrol="
+        speed:  1.4;
+        pointA: -8 0.8 -8;
+        pointB:  8 0.8 -8;
+      "
+        position="0 0.8 -8"
+        scale="0.5 0.5 0.5"
+        shadow="cast: true"
+      ></a-entity>
+
+      <!-- Swimming Pool
+           Invisible basin placed over the static pool in the mansion model.
+           Only the animated water surface and caustics are visible. -->
+      <a-entity
+        id="swimming-pool"
+        position="16.1 0.45 24"
+        rotation="0 0 0"
+        pool-basin="
+    width:      24.5;
+    depth:      12;
+    wallHeight:  0.01;
+    wallThick:   0.01;
+    waterLevel:  0.98;
+    tileColor:   #00000000;
+    groutColor:  #00000000;
+    coping:      #00000000;
+    waterColor:  #1ab5e8;
+    deepColor:   #0a4a7a;
+  "
+      ></a-entity>
+
+      <a-entity
+        position="16.1 1.65 24"
+        pool-caustics="intensity: 1.2; speed: 1.0"
+      ></a-entity>
+
+      <!-- Caustic light flickering above the pool surface -->
+      <a-entity
+        position="20 1.2 25"
+        pool-caustics="intensity: 1.2; speed: 1.0"
+      ></a-entity>
+
+      <a-sky id="sky-box" src="#sky" radius="600" color="#87ceeb"></a-sky>
+
+      <a-light
+        id="ambient-light"
+        type="ambient"
+        color="#bbbbbb"
+        intensity="0.9"
+      ></a-light>
+
+      <a-light
+        id="sun-light"
+        type="directional"
+        color="#fff8e8"
+        intensity="1.5"
+        position="10 20 8"
+        cast-shadow="true"
+        shadow-camera-left="-40"
+        shadow-camera-right="40"
+        shadow-camera-top="40"
+        shadow-camera-bottom="-40"
+        shadow-map-width="2048"
+        shadow-map-height="2048"
+      ></a-light>
+
+      <!-- Soft blue fill light to simulate sky bounce -->
+      <a-light
+        type="directional"
+        color="#a8d0f8"
+        intensity="0.3"
+        position="-8 10 -15"
+      ></a-light>
+    </a-scene>
+  </body>
+</html>
